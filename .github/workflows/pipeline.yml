@@ -5,12 +5,17 @@ on:
     branches:
       - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
     types: [opened, synchronize]
 
+permissions:
+  contents: write
+
 jobs:
-  simple_deployment_pipeline:
+  build_and_test:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v6
 
@@ -36,31 +41,24 @@ jobs:
       - name: Run Playwright tests
         run: npm run test:e2e
 
+  deploy:
+    needs: [build_and_test]
+    runs-on: ubuntu-latest
+
+    if: ${{ github.event_name == 'push' && !contains(join(github.event.commits.*.message, ' '), '#skip') }}
+
+    steps:
       - name: Trigger deployment
-        if: ${{ github.event_name == 'push' && !contains(join(github.event.commits.*.message, ' '), '#skip') }}
         run: curl ${{ secrets.RENDER_DEPLOY_HOOK }}
 
-  tag_release:
-    needs: [simple_deployment_pipeline]
+  notify_success:
+    needs: [deploy]
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
 
-      - name: Bump version and push tag
-        if: ${{ github.event_name == 'push' && !contains(join(github.event.commits.*.message, ' '), '#skip') }}
-        uses: anothrNick/github-tag-action@4ed44965e0db8dab2b466a16da04aec3cc312fd8
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEFAULT_BUMP: patch
-          
-  discord_notification:
-    needs: [simple_deployment_pipeline]
-    runs-on: ubuntu-latest
-    if: always()
+    if: ${{ github.event_name == 'push' && needs.deploy.result == 'success' }}
 
     steps:
       - name: Discord success notification
-        if: ${{ github.event_name == 'push' && needs.simple_deployment_pipeline.result == 'success' }}
         uses: sarisia/actions-status-discord@v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
@@ -93,8 +91,14 @@ jobs:
             Commit:
             ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
 
+  notify_failure:
+    needs: [deploy]
+    runs-on: ubuntu-latest
+
+    if: ${{ needs.deploy.result == 'failure' }}
+
+    steps:
       - name: Discord failure notification
-        if: ${{ needs.simple_deployment_pipeline.result == 'failure' }}
         uses: sarisia/actions-status-discord@v1
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
@@ -129,3 +133,18 @@ jobs:
 
             Workflow run:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  tag_release:
+    needs: [deploy]
+    runs-on: ubuntu-latest
+
+    if: ${{ github.event_name == 'push' && !contains(join(github.event.commits.*.message, ' '), '#skip') && needs.deploy.result == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Bump version and push tag
+        uses: anothrNick/github-tag-action@4ed44965e0db8dab2b466a16da04aec3cc312fd8
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
